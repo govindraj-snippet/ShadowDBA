@@ -1,18 +1,20 @@
 package org.example.shadowdba;
 
-
-import lombok.Data;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
-@Data
 @ConfigurationProperties(prefix = "shadow-dba")
 public class ShadowDbaProperties {
 
-    private boolean enabled = true ;
+    private boolean enabled = true;
+    private long thresholdMs = 500;
+    private String geminiApiKey;
 
-    private long thresholdMs = 500 ;
+    public boolean isEnabled() { return enabled; }
+    public void setEnabled(boolean enabled) { this.enabled = enabled; }
 
-    private String geminiApiKey ;
+    public long getThresholdMs() { return thresholdMs; }
+    public void setThresholdMs(long thresholdMs) { this.thresholdMs = thresholdMs; }
 
-
+    public String getGeminiApiKey() { return geminiApiKey; }
+    public void setGeminiApiKey(String geminiApiKey) { this.geminiApiKey = geminiApiKey; }
 }
