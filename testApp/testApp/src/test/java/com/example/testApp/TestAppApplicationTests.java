@@ -1,10 +1,10 @@
-package com.govi.shadowDBA;
+package com.example.testApp;
 
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.SpringBootTest;
 
 @SpringBootTest
-class ShadowDbaApplicationTests {
+class TestAppApplicationTests {
 
 	@Test
 	void contextLoads() {

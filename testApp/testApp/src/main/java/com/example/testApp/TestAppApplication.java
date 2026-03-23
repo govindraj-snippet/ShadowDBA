@@ -1,13 +1,13 @@
-package com.govi.shadowDBA;
+package com.example.testApp;
 
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 
 @SpringBootApplication
-public class ShadowDbaApplication {
+public class TestAppApplication {
 
 	public static void main(String[] args) {
-		SpringApplication.run(ShadowDbaApplication.class, args);
+		SpringApplication.run(TestAppApplication.class, args);
 	}
 
 }
