@@ -9,8 +9,16 @@ import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestClient;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.nio.file.StandardOpenOption;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 
 @Service
 public class GeminiOptimizerService {
@@ -21,14 +29,31 @@ public class GeminiOptimizerService {
     private final ShadowDbaProperties properties;
     private final ObjectMapper objectMapper;
 
-    // We use the Gemini 1.5 Pro model for expert DBA analysis
-    //private static final String GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro:generateContent";
+    private final Set<Integer> analyzedQueries = ConcurrentHashMap.newKeySet();
+    private static final String REPORT_FILE = "shadowdba-reports.md";
     private static final String GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent";
-   // private static final String GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro:generateContent";
+
+    // ✨ THE ULTIMATE PROMPT: Forces a strict, predictable Markdown template every time
+  //  private static final String PROMPT_TEMPLATE =
+    // ✨ THE NON-INVASIVE ARCHITECT PROMPT
     private static final String PROMPT_TEMPLATE =
-            "You are an expert Database Administrator. The following raw SQL query took %d milliseconds to execute. " +
-                    "Analyze it and provide a concise, optimized version or suggest specific database indexes to improve performance. " +
-                    "Keep the answer under 150 words.\n\nQuery: %s";
+            "You are an expert Spring Boot 3 Architect. The following Hibernate SQL query took %d ms to execute. " +
+                    "CRITICAL RULES: \n" +
+                    "1. DO NOT provide raw SQL scripts. \n" +
+                    "2. Use ONLY modern jakarta.persistence.* annotations. \n" +
+                    "3. STRICTLY NON-INVASIVE: Do NOT add new fields, new columns, or lifecycle hooks (like @PrePersist) to the Entity. \n" +
+                    "4. Optimize using ONLY the existing fields. Use native Spring Data JPA keywords (like IgnoreCase) or optimized @Query rewrites. \n" +
+                    "5. The @Index annotation MUST ONLY be placed inside @Table(indexes = {...}) at the class level. \n" +
+                    "6. Provide a SURGICAL, MINIMAL fix. Output only the exact lines to add/change.\n\n" +
+                    "Format your response EXACTLY using the Markdown structure below:\n\n" +
+                    "### 💡 Root Cause\n" +
+                    "(Explain the exact bottleneck in under 40 words)\n\n" +
+                    "### 🎯 The Minimal Fix\n" +
+                    "**Target File:** (e.g., Customer.java, CustomerRepository.java)\n\n" +
+                    "```text\n" +
+                    "(Provide ONLY the specific Java/Spring code. No boilerplate.)\n" +
+                    "```\n\n" +
+                    "Query: %s";
 
     public GeminiOptimizerService(ShadowDbaProperties properties, ObjectMapper objectMapper) {
         this.properties = properties;
@@ -36,26 +61,29 @@ public class GeminiOptimizerService {
         this.restClient = RestClient.builder().build();
     }
 
-    @Async // This ensures the API call happens in the background without slowing down the user's app
-    public void analyzeQuery(String sql, long executionTimeMs) {
+    @Async
+    public void analyzeQuery(String rawSql, long executionTimeMs) {
         if (properties.getGeminiApiKey() == null || properties.getGeminiApiKey().isBlank()) {
-            log.warn("[shadowDBA] Gemini API Key is missing. Please add shadow-dba.gemini-api-key to your application.properties.");
+            log.warn("[shadowDBA] Gemini API Key is missing.");
+            return;
+        }
+
+        // Scrub sensitive data
+        String safeSql = SqlSanitizer.sanitize(rawSql);
+
+        // Memory bank check
+        int queryHash = safeSql.hashCode();
+        if (!analyzedQueries.add(queryHash)) {
             return;
         }
 
         try {
-            String prompt = String.format(PROMPT_TEMPLATE, executionTimeMs, sql);
+            String prompt = String.format(PROMPT_TEMPLATE, executionTimeMs, safeSql);
 
-            // Build the JSON payload expected by Gemini using Maps (safe from SQL quotes breaking JSON)
             Map<String, Object> requestBody = Map.of(
-                    "contents", List.of(
-                            Map.of("parts", List.of(
-                                    Map.of("text", prompt)
-                            ))
-                    )
+                    "contents", List.of(Map.of("parts", List.of(Map.of("text", prompt))))
             );
 
-            // Make the POST request to Google's servers
             String responseJson = restClient.post()
                     .uri(GEMINI_URL + "?key=" + properties.getGeminiApiKey())
                     .contentType(MediaType.APPLICATION_JSON)
@@ -63,32 +91,37 @@ public class GeminiOptimizerService {
                     .retrieve()
                     .body(String.class);
 
-            // Parse the response and print it
-            printAiSuggestion(sql, executionTimeMs, responseJson);
+            saveAndPrintAiSuggestion(safeSql, executionTimeMs, responseJson);
 
         } catch (Exception e) {
             log.error("[shadowDBA] Failed to communicate with Gemini API: {}", e.getMessage());
+            analyzedQueries.remove(queryHash);
         }
     }
 
-    private void printAiSuggestion(String sql, long time, String jsonResponse) {
+    private void saveAndPrintAiSuggestion(String safeSql, long time, String jsonResponse) {
         try {
-            // Drill down into the Gemini JSON response to get the actual text
             JsonNode rootNode = objectMapper.readTree(jsonResponse);
             String aiText = rootNode.path("candidates").get(0)
                     .path("content").path("parts").get(0)
                     .path("text").asText();
 
-            // Print the final result beautifully to the user's console
-            System.out.println("\n===================================================================");
-            System.out.println("🚨 [shadowDBA] AI PERFORMANCE ALERT (" + time + "ms)");
-            System.out.println("===================================================================");
-            System.out.println("Original SQL:\n" + sql + "\n");
-            System.out.println("🤖 Gemini DBA Analysis:\n" + aiText.trim());
-            System.out.println("===================================================================\n");
+            System.out.println("\n🚨 [shadowDBA] AI analyzed a slow query (" + time + "ms). Saved to " + REPORT_FILE);
+
+            String timeStamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
+            String markdownReport = String.format(
+                    "\n## 🚨 Slow Query Alert: %sms\n**Time:** %s\n\n### 🛡️ Sanitized SQL:\n```sql\n%s\n```\n\n%s\n\n---\n",
+                    time, timeStamp, safeSql, aiText.trim()
+            );
+
+            Path path = Paths.get(REPORT_FILE);
+            if (!Files.exists(path)) {
+                Files.writeString(path, "# shadowDBA Performance Reports\n\n");
+            }
+            Files.writeString(path, markdownReport, StandardOpenOption.APPEND);
 
         } catch (Exception e) {
-            log.error("[shadowDBA] Could not parse Gemini response.", e);
+            log.error("[shadowDBA] Could not parse Gemini response or write to file.", e);
         }
     }
 }
